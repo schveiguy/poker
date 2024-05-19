@@ -204,7 +204,7 @@ struct PokerHand
         }
     }
 
-    void description(Out)(auto ref Out output, bool includeKickers = true)
+    void description(Out)(auto ref Out output, bool includeKickers = true) if(isOutputRange!(Out, char))
     {
         import std.format;
         import std.algorithm : map, filter;
@@ -266,11 +266,11 @@ struct PokerHand
     }
 
     @safe pure
-    string description()
+    string description(bool includeKickers = true)
     {
         import std.array : Appender;
         Appender!string output;
-        description(output);
+        description(output, includeKickers);
         return output.data;
     }
 }
