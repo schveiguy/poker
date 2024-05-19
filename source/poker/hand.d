@@ -27,6 +27,23 @@ enum Rank : byte
     Ace,
 }
 
+static immutable string[Rank.max+1] plurals = [
+    "ERROR",
+    "Deuces",
+    "Threes",
+    "Fours",
+    "Fives",
+    "Sixes", // all because of this one...
+    "Sevens",
+    "Eights",
+    "Nines",
+    "Tens",
+    "Jacks",
+    "Queens",
+    "Kings",
+    "Aces"
+];
+
 @safe pure nothrow @nogc Rank getRank(char c)
 {
     import std.algorithm : countUntil;
@@ -86,13 +103,15 @@ struct Card
     pure @safe string toString() const
     {
         import std.conv : text;
+        if(rank == Rank.LowAce) return "";
         return text(rank, " of ", suit);
     }
 
     void toString(Out)(auto ref Out output) const
     {
         import std.format : formattedWrite;
-        output.formattedWrite("%s of %s", rank, suit);
+        if(rank != Rank.LowAce)
+            output.formattedWrite("%s of %s", rank, suit);
     }
 }
 
@@ -137,6 +156,8 @@ struct CardMap {
     Card popKicker()
     {
         import core.bitop : bsr;
+        if(mapping == 0)
+            return Card.init;
         auto f = bsr(mapping);
         mapping &= ~(1UL << f);
         return Card(cast(Rank)(f / 4), cast(Suit)(f % 4));
@@ -171,7 +192,7 @@ struct PokerHand
                 // compare card ranks, they are in order from most significant to
                 // least.
                 return cmp(cards[], other.cards[]);
-            if(type < other.type)
+            if(type > other.type)
                 return 1; // our hand better
             return -1; // their hand better
         }
@@ -186,49 +207,62 @@ struct PokerHand
     void description(Out)(auto ref Out output, bool includeKickers = true)
     {
         import std.format;
-        import std.algorithm : map;
+        import std.algorithm : map, filter;
+        static genKickers(Card[] cards) {
+            return cards.map!(c => c.rank).filter!(c => c != Rank.LowAce);
+        }
+        // typeof(genKickers(null)) kickers; // this doesn't work for some reason
+        auto kickers = genKickers(null);
+
         with(HandType) final switch(type)
         {
         case StraightFlush:
             output.formattedWrite("Straight Flush, %s to %s of %s", cards[4].rank, cards[0].rank, cards[0].suit);
             break;
         case Quads:
-            output.formattedWrite("Four of a Kind, %ss", cards[0].rank);
+            output.formattedWrite("Four of a Kind, %s", plurals[cards[0].rank]);
             if(includeKickers)
-                output.formattedWrite(" (%s kicker)", cards[4].rank);
+                kickers = genKickers(cards[4 .. $]);
             break;
         case FullHouse:
-            output.formattedWrite("Full House, %ss over %ss", cards[0].rank, cards[4].rank);
+            output.formattedWrite("Full House, %s over %s", plurals[cards[0].rank], plurals[cards[4].rank]);
             break;
         case Flush:
             output.formattedWrite("Flush, %s high %s", cards[0].rank, cards[0].suit);
             if(includeKickers)
-                output.formattedWrite(" (%(%s+%))", cards[1 .. $].map!(c => c.rank));
+                kickers = genKickers(cards[1 .. $]);
             break;
         case Straight:
             output.formattedWrite("Straight, %s to %s", cards[4].rank, cards[0].rank);
             break;
         case Trips:
-            output.formattedWrite("Three of a Kind, %s", cards[0].rank);
+            output.formattedWrite("Three of a Kind, %s", plurals[cards[0].rank]);
             if(includeKickers)
-                output.formattedWrite(" (%(%s+%) kicker)", cards[3 .. $].map!(c => c.rank));
+                kickers = genKickers(cards[3 .. $]);
             break;
         case TwoPair:
-            output.formattedWrite("Two Pair %ss and %ss", cards[0].rank, cards[2].rank);
+            output.formattedWrite("Two Pair %s and %s", plurals[cards[0].rank], plurals[cards[2].rank]);
             if(includeKickers)
-                output.formattedWrite(" (%s kicker)", cards[4].rank);
+                kickers = genKickers(cards[4 .. $]);
             break;
         case Pair:
-            output.formattedWrite("Pair of %ss", cards[0].rank);
+            output.formattedWrite("Pair of %s", plurals[cards[0].rank]);
             if(includeKickers)
-                output.formattedWrite(" (%(%s+%) kicker)", cards[2 .. $].map!(c => c.rank));
+                kickers = genKickers(cards[2 .. $]);
             break;
         case HighCard:
-            output.formattedWrite("High Card %s", cards[0].rank);
-            if(includeKickers)
-                output.formattedWrite(" (%(%s+%) kicker)", cards[1 .. $].map!(c => c.rank));
+            if(cards[0].rank == Rank.LowAce)
+                output.formattedWrite("No Hand");
+            else
+            {
+                output.formattedWrite("High Card %s", cards[0].rank);
+                if(includeKickers)
+                    kickers = genKickers(cards[1 .. $]);
+            }
             break;
         }
+        if(!kickers.empty)
+            output.formattedWrite(" (%(%s+%) kicker)", kickers);
     }
 
     @safe pure
