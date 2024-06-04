@@ -120,7 +120,7 @@ enum HandType
     HighCard,
     Pair,
     TwoPair,
-    Trips,
+    Set,
     Straight,
     Flush,
     FullHouse,
@@ -169,7 +169,8 @@ struct CardMap {
         auto cards = (mapping >> (r * 4)) & 0xf;
         assert(cards);
         auto result = Card(r, cast(Suit)bsr(cards));
-        assert(removeCard(result));
+        immutable didRemove = removeCard(result);
+        assert(didRemove);
         return result;
     }
 }
@@ -231,7 +232,7 @@ struct PokerHand
         case Straight:
             output.formattedWrite("Straight, %s to %s", cards[4].rank, cards[0].rank);
             break;
-        case Trips:
+        case Set:
             output.formattedWrite("Three of a Kind, %s", plurals[cards[0].rank]);
             if(includeKickers)
                 kickers = genKickers(cards[3 .. $]);
@@ -271,14 +272,14 @@ struct PokerHand
     }
 }
 
-// the straight table does not use the low ace slot, because we can just look at the ace bit. Therefore, we 
-ubyte[] buildStraightTable() @safe
+private ubyte[] buildStraightTable() @safe
 {
     ubyte[] result = new ubyte[1 << 12];
     // We count only high aces, so the lowest bit is actually marking a deuce.
     static immutable ushort[] masks = [
-        0b1_0000_0000_1111, // wheel
-        0b0_0000_0001_1111, // 2 - 6
+        //A KQJT 9876 5432
+        0b1_0000_0000_1111,
+        0b0_0000_0001_1111,
         0b0_0000_0011_1110,
         0b0_0000_0111_1100,
         0b0_0000_1111_1000,
@@ -304,7 +305,6 @@ ubyte[] buildStraightTable() @safe
     ];
 
 
-    // the low bit is either clear or set, as it tracks the high ace.
     ushort cur = 0;
 
     while(cur < result.length * 2)
@@ -332,10 +332,11 @@ ubyte[] buildStraightTable() @safe
                 ++rank;
             --rank;
             cur |= masks[rank];
+            assert(rank != -1);
         }
 
         if(!__ctfe)
-            writefln("storing straights for %b, rank is %d", cur, rank);
+            writefln("storing straights for %b, rank is %d", cur, cast(Rank)(rank + Rank.Five));
 
         do
         {
@@ -349,6 +350,7 @@ ubyte[] buildStraightTable() @safe
     return result;
 }
 
+// build the table at compile time
 static immutable ubyte[1 << 12] maxStraight = buildStraightTable();
 //pragma(msg, maxStraight.length);
 
@@ -357,6 +359,8 @@ private Rank beststraight(bool useTable = true)(uint bits)
 {
     static if(useTable)
     {
+        // the table is divided into nibbles. All the low nibbles are for hands
+        // with no deuce. All the high nibbles are hands which contain a deuce.
         if(bits & 2)
             return cast(Rank)(maxStraight[bits >> 2] >> 4);
         else
@@ -369,7 +373,7 @@ private Rank beststraight(bool useTable = true)(uint bits)
         foreach(i; 0 .. 4)
             check = (check << 1) & bits;
         if(!check)
-            return Rank.init; // no straight
+            return Rank.Empty; // no straight
 
         // straight, get the highest card of the straight from the bitmap
         return cast(Rank)bsr(check);
@@ -382,6 +386,7 @@ unittest
     assert(beststraight!false(0b10000000011110) == Rank.Five);
     assert(beststraight!false(0b10101111111110) == Rank.Ten);
 
+    // validate both algorithms agree.
     foreach(b; 0 .. 1 << Rank.Ace)
         assert(beststraight!true(b << 1) == beststraight!false(b << 1));
 }
@@ -422,9 +427,9 @@ PokerHand bestHand(CR)(CR cardRange) if (isInputRange!CR && is(ElementType!CR ==
         return result;
     }
 
-    // check the rank map, looking for pairs, trips, quads
+    // check the rank map, looking for pairs, set, quads
     Rank bestQuad;
-    Rank bestTrip;
+    Rank bestSet;
     Rank pair1;
     Rank pair2;
     HandType rankedHT = HandType.HighCard;
@@ -453,12 +458,12 @@ PokerHand bestHand(CR)(CR cardRange) if (isInputRange!CR && is(ElementType!CR ==
         }
         else if(n == 3)
         {
-            //writeln("found trip: ", r);
-            if(setRank(bestTrip, r))
+            //writeln("found set: ", r);
+            if(setRank(bestSet, r))
                 // if there's already a pair, this is a full house
-                rankedHT = pair1 == Rank.Empty ? HandType.Trips : HandType.FullHouse;
+                rankedHT = pair1 == Rank.Empty ? HandType.Set : HandType.FullHouse;
             else if(setRank(pair1, r))
-                // there's already a higher trip, treat this trip as the pair
+                // there's already a higher set, treat this set as the pair
                 // of the full house
                 rankedHT = HandType.FullHouse;
         }
@@ -466,18 +471,18 @@ PokerHand bestHand(CR)(CR cardRange) if (isInputRange!CR && is(ElementType!CR ==
         {
             //writeln("found pair: ", r);
             if(setRank(pair1, r))
-                // if there's already a trip, full house, otherwise, just a pair
-                rankedHT = bestTrip == Rank.Empty ? HandType.Pair : HandType.FullHouse;
+                // if there's already a set, full house, otherwise, just a pair
+                rankedHT = bestSet == Rank.Empty ? HandType.Pair : HandType.FullHouse;
             else if(setRank(pair2, r) && rankedHT == HandType.Pair)
                 // only get here with 2 pair
                 rankedHT = HandType.TwoPair;
         }
     }
 
-    //writefln("q: %s, t: %s, p1: %s, p2: %s", bestQuad, bestTrip, pair1, pair2);
+    //writefln("q: %s, t: %s, p1: %s, p2: %s", bestQuad, bestSet, pair1, pair2);
     //writeln("here, ranked type is ", rankedHT);
 
-    // if we have a ranked hand type, and it's bigger than trips, we need to
+    // if we have a ranked hand type, and it's bigger than a set, we need to
     // return it now.
     if(rankedHT == HandType.Quads)
     {
@@ -494,7 +499,7 @@ PokerHand bestHand(CR)(CR cardRange) if (isInputRange!CR && is(ElementType!CR ==
         PokerHand result;
         result.type = HandType.FullHouse;
         foreach(i; 0 .. 3)
-            result.cards[i] = ranks.popRank(bestTrip);
+            result.cards[i] = ranks.popRank(bestSet);
         foreach(i; 3 .. 5)
             result.cards[i] = ranks.popRank(pair1);
         return result;
@@ -527,7 +532,7 @@ PokerHand bestHand(CR)(CR cardRange) if (isInputRange!CR && is(ElementType!CR ==
 
     // check for straight with all suits
     straight = beststraight(suits[0] | suits[1] | suits[2] | suits[3]);
-    if(straight > Rank.init)
+    if(straight != Rank.Empty)
     {
         PokerHand result;
         foreach(i; 0 .. 5)
@@ -541,14 +546,14 @@ PokerHand bestHand(CR)(CR cardRange) if (isInputRange!CR && is(ElementType!CR ==
         return result;
     }
 
-    // Trips, 2 pair, pair, high card
+    // Set, 2 pair, pair, high card
     PokerHand result;
     result.type = rankedHT;
     switch(rankedHT)
     {
-    case HandType.Trips:
+    case HandType.Set:
         foreach(i; 0 .. 3)
-            result.cards[i] = ranks.popRank(bestTrip);
+            result.cards[i] = ranks.popRank(bestSet);
         result.cards[3] = ranks.popKicker();
         result.cards[4] = ranks.popKicker();
         break;
@@ -595,7 +600,7 @@ PokerHand bestHand(CR)(CR cardRange) if (isInputRange!CR && is(ElementType!CR ==
     assert(log(bestHand(mc(["3C", "3D", "3S", "4C", "4D"]))).type == HandType.FullHouse);
     assert(log(bestHand(mc(["9C", "TC", "4C", "2C", "KC"]))).type == HandType.Flush);
     assert(log(bestHand(mc(["8C", "JD", "7C", "TC", "9C"]))).type == HandType.Straight);
-    assert(log(bestHand(mc(["9D", "9C", "9H", "QC", "KC"]))).type == HandType.Trips);
+    assert(log(bestHand(mc(["9D", "9C", "9H", "QC", "KC"]))).type == HandType.Set);
     assert(log(bestHand(mc(["4C", "3C", "AH", "3D", "AC"]))).type == HandType.TwoPair);
     assert(log(bestHand(mc(["7D", "TC", "4S", "7C", "KC"]))).type == HandType.Pair);
     assert(log(bestHand(mc(["7D", "TC", "4S", "3C", "KC"]))).type == HandType.HighCard);
